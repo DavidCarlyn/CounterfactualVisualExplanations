@@ -1,3 +1,6 @@
+import random
+import math
+
 from argparse import ArgumentParser
 
 import torch
@@ -119,26 +122,27 @@ def get_next_edit(feat_original, feat_target, tgt_lbl, model, S=[]):
                 feat_original[:, i] = tmp
     return edit, highest_conf
 
-def visualize_feature(model, img, img_features, img2, img2_features, idx, idx2):
-    col = idx // img_features.shape[1]
-    row = idx % img_features.shape[1]
-    inv_size1 = get_size_before_conv(img_features.shape[1], model.maxpool)
-    window = [row*2, (row*2)+1, col*2, (col*2)+1]
-    inv_size2 = get_size_before_conv(inv_size1, model.conv2)
-    window = [window[0]*2, (window[1]*2)+2, window[2]*2, (window[3]*2)+2]
-    img_size = get_size_before_conv(inv_size2, model.conv1) + 1
-    window = [window[0]*2, (window[1]*2)+2, window[2]*2, (window[3]*2)+2]
+def visualize_feature(model, img, img_features, img2, img2_features, S):
+    for idx, idx2 in S:
+        col = idx % img_features.shape[1]
+        row = idx // img_features.shape[1]
+        inv_size1 = get_size_before_conv(img_features.shape[1], model.maxpool)
+        window = [row*2, (row*2)+1, col*2, (col*2)+1]
+        inv_size2 = get_size_before_conv(inv_size1, model.conv2)
+        window = [window[0]*2, (window[1]*2)+2, window[2]*2, (window[3]*2)+2]
+        img_size = get_size_before_conv(inv_size2, model.conv1) + 1
+        window = [window[0]*2, (window[1]*2)+2, window[2]*2, (window[3]*2)+2]
 
-    col = idx // img2_features.shape[1]
-    row = idx % img2_features.shape[1]
-    inv_size1 = get_size_before_conv(img2_features.shape[1], model.maxpool)
-    window2 = [row*2, (row*2)+1, col*2, (col*2)+1]
-    inv_size2 = get_size_before_conv(inv_size1, model.conv2)
-    window2 = [window2[0]*2, (window2[1]*2)+2, window2[2]*2, (window2[3]*2)+2]
-    img_size = get_size_before_conv(inv_size2, model.conv1) + 1
-    window2 = [window2[0]*2, (window2[1]*2)+2, window2[2]*2, (window2[3]*2)+2]
-    img[0, window[0]:window[1], window[2]:window[3]] = img2[0, window2[0]:window2[1], window2[2]:window2[3]]
-    ToPILImage()(img).save("test.png")
+        col = idx2 % img2_features.shape[1]
+        row = idx2 // img2_features.shape[1]
+        inv_size1 = get_size_before_conv(img2_features.shape[1], model.maxpool)
+        window2 = [row*2, (row*2)+1, col*2, (col*2)+1]
+        inv_size2 = get_size_before_conv(inv_size1, model.conv2)
+        window2 = [window2[0]*2, (window2[1]*2)+2, window2[2]*2, (window2[3]*2)+2]
+        img_size = get_size_before_conv(inv_size2, model.conv1) + 1
+        window2 = [window2[0]*2, (window2[1]*2)+2, window2[2]*2, (window2[3]*2)+2]
+        img[0, window[0]:window[1], window[2]:window[3]] = img2[0, window2[0]:window2[1], window2[2]:window2[3]]
+    ToPILImage()(img).save("composite.png")
 
     with torch.no_grad():
         img = img.cuda()
@@ -146,50 +150,57 @@ def visualize_feature(model, img, img_features, img2, img2_features, idx, idx2):
         sm = nn.Softmax()
         print(sm(out[0]))
 
-    exit()
-
 def main():
     args = get_args()
     train_dset, test_dset = get_datasets()
     model = train(train_dset, test_dset, args)
-    one_img = None
-    four_img = None
+    source_lbl = random.choice(range(10))
+    tmp = list(range(10))
+    tmp.pop(source_lbl)
+    distractor_lbl = random.choice(tmp)
+    source_img = None
+    distractor_img = None
     for img, lbl in test_dset:
-        if lbl == 1:
-            one_img = img
+        if lbl == source_lbl:
+            source_img = img
         
-        if lbl == 4:
-            four_img = img
+        if lbl == distractor_lbl:
+            distractor_img = img
 
-        if one_img is not None and four_img is not None:
+        if source_img is not None and distractor_img is not None:
             break
 
-    ToPILImage()(one_img).save("one.png")
-    ToPILImage()(four_img).save("four.png")
+    ToPILImage()(source_img).save("source.png")
+    ToPILImage()(distractor_img).save("distractor.png")
     
     with torch.no_grad():
         S = []
-        one_features = model.extract_features(one_img.unsqueeze(0).cuda())[0]
-        four_features = model.extract_features(four_img.unsqueeze(0).cuda())[0]
-        visualize_feature(model, one_img, one_features, four_img, four_features, 5, 4)
-        one_features = one_features.view(-1, one_features.shape[1] * one_features.shape[2])
-        four_features = four_features.view(-1, four_features.shape[1] * four_features.shape[2])
+        source_features = model.extract_features(source_img.unsqueeze(0).cuda())[0]
+        distractor_features = model.extract_features(distractor_img.unsqueeze(0).cuda())[0]
+        source_features = source_features.view(-1, source_features.shape[1] * source_features.shape[2])
+        distractor_features = distractor_features.view(-1, distractor_features.shape[1] * distractor_features.shape[2])
 
         sm = nn.Softmax()
-        max_loops = one_features.shape[1]**2
+        max_loops = source_features.shape[1]**2
         for _ in range(max_loops):
-            edit, conf = get_next_edit(one_features, four_features, 4, model, S)
+            edit, conf = get_next_edit(source_features, distractor_features, distractor_lbl, model, S)
             print(edit)
             S.append(edit)
-            #out = model.predict(one_features.unsqueeze(0))[0]
-            one_features[:, edit[0]] = four_features[:, edit[1]]
-            out = model.predict(one_features.unsqueeze(0))[0]
+            #out = model.predict(source_features.unsqueeze(0))[0]
+            source_features[:, edit[0]] = distractor_features[:, edit[1]]
+            out = model.predict(source_features.unsqueeze(0))[0]
             conf = sm(out)
-            if conf[4] == max(conf): break
+            if conf[distractor_lbl] == max(conf): break
         
         print(f"Number of edits: {len(S)}")
-        print(f"Confidence: {conf[4]}")
+        print(f"Confidence: {conf[distractor_lbl]}")
 
+        visualize_feature(model, 
+            source_img, 
+            source_features.view(source_features.shape[0], int(math.sqrt(source_features.shape[1])), -1), 
+            distractor_img, 
+            distractor_features.view(distractor_features.shape[0], int(math.sqrt(distractor_features.shape[1])), -1),
+            S)
 
     
 
